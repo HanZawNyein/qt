@@ -63,7 +63,7 @@ class QFontSubset
 {
 public:
     QFontSubset(QFontEngine *fe, int obj_id = 0)
-        : object_id(obj_id), noEmbed(false), fontEngine(fe), downloaded_glyphs(0), standard_font(false)
+        : object_id(obj_id), noEmbed(false), fontEngine(fe), downloaded_glyphs(0), standard_font(false), semantic_width(-1)
         { fontEngine->ref.ref(); addGlyph(0); }
     ~QFontSubset() {
         if (!fontEngine->ref.deref() && fontEngine->cache_count == 0)
@@ -74,6 +74,7 @@ public:
     QByteArray toType1() const;
     QByteArray type1AddedGlyphs() const;
     QByteArray widthArray() const;
+    int semanticAdvanceWidth() const;
     QByteArray createToUnicodeMap() const;
     QVector<int> getReverseMap() const;
     QByteArray glyphName(unsigned int glyph, const QVector<int> reverseMap) const;
@@ -90,6 +91,7 @@ public:
     int nGlyphs() const { return glyph_indices.size(); }
     mutable QFixed emSquare;
     mutable QVector<QFixed> widths;
+    mutable int semantic_width;
 };
 
 QT_END_NAMESPACE

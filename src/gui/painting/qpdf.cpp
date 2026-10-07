@@ -48,6 +48,9 @@
 #include "qprinterinfo.h"
 #include <qnumeric.h>
 #include "private/qfont_p.h"
+#ifdef QT_MYANMAR_HARFBUZZ
+#include "../text/qmyanmarharfbuzz_p.h"
+#endif
 
 #ifdef Q_OS_UNIX
 #include "private/qcore_unix_p.h" // overrides QT_OPEN
@@ -1953,6 +1956,12 @@ void QPdfBaseEnginePrivate::drawTextItem(const QPointF &p, const QTextItemInt &t
     int synthesized = ti.fontEngine->synthesized();
     qreal stretch = synthesized & QFontEngine::SynthesizedStretch ? ti.fontEngine->fontDef.stretch/100. : 1.;
 
+    bool artifactText = false;
+#ifdef QT_MYANMAR_HARFBUZZ
+    artifactText = !postscript && qt_myanmar_harfbuzz_enabled()
+        && ti.charFormat.property(QTextFormat::UserProperty + 0x4d59).toBool();
+#endif
+    if (artifactText) *currentPage << "/Span << /ActualText <> >> BDC\n";
     *currentPage << "BT\n"
                  << "/F" << font->object_id << size << "Tf "
                  << stretch << (synthesized & QFontEngine::SynthesizedItalic
@@ -1960,29 +1969,40 @@ void QPdfBaseEnginePrivate::drawTextItem(const QPointF &p, const QTextItemInt &t
                                 : "0 0 -1 0 0 Tm\n");
 
 
-#if 0
-    // #### implement actual text for complex languages
-    const unsigned short *logClusters = ti.logClusters;
-    int pos = 0;
-    do {
-        int end = pos + 1;
-        while (end < ti.num_chars && logClusters[end] == logClusters[pos])
-            ++end;
-        *currentPage << "/Span << /ActualText <FEFF";
-        for (int i = pos; i < end; ++i) {
-            s << toHex((ushort)ti.chars[i].unicode(), buf);
-        }
-        *currentPage << "> >>\n"
-            "BDC\n"
-            "<";
-        int ge = end == ti.num_chars ? ti.num_glyphs : logClusters[end];
-        for (int gs = logClusters[pos]; gs < ge; ++gs)
-            *currentPage << toHex((ushort)ti.glyphs[gs].glyph, buf);
-        *currentPage << "> Tj\n"
-            "EMC\n";
-        pos = end;
-    } while (pos < ti.num_chars);
-#else
+    // ActualText describes each shaped cluster, not the nominal font cmap.
+    // Keep normal PDF glyph positioning and font subsetting unchanged.
+    QVector<int> actualStart, actualEnd;
+    bool actualText = false;
+#ifdef QT_MYANMAR_HARFBUZZ
+    actualText = !artifactText && !postscript && qt_myanmar_harfbuzz_enabled()
+        && !(ti.flags & QTextItem::RightToLeft) && ti.chars && ti.logClusters
+        && ti.num_chars > 0 && glyphs.size() == ti.glyphs.numGlyphs;
+    bool myanmar = false;
+    for (int c = 0; actualText && c < ti.num_chars; ++c)
+        myanmar |= qt_myanmar_character(ti.chars[c].unicode());
+    actualText &= myanmar;
+    if (actualText) { actualStart.fill(-1, glyphs.size()); actualEnd.fill(-1, glyphs.size()); }
+    const int clusterOffset = actualText ? ti.logClusters[0] : 0;
+    for (int c = 0; actualText && c < ti.num_chars;) {
+        const int gs = ti.logClusters[c] - clusterOffset;
+        int end = c + 1;
+        while (end < ti.num_chars && ti.logClusters[end] == ti.logClusters[c]) ++end;
+        const int ge = end < ti.num_chars ? ti.logClusters[end] - clusterOffset : glyphs.size();
+        if (gs < 0 || gs >= ge || ge > glyphs.size()) { actualText = false; break; }
+        actualStart[gs] = c;
+        actualEnd[ge-1] = end;
+        c = end;
+    }
+    if (!actualText) { actualStart.fill(-1); actualEnd.fill(-1); }
+#endif
+    // Use the neutral .notdef CID as the invisible semantic carrier. Readers
+    // can confuse a Myanmar base glyph with the replacement's combining sequence.
+    const qreal semanticWidth = actualText ? font->semanticAdvanceWidth() * size / 1000. : 0.;
+    if (semanticWidth <= 0.) actualText = false;
+    // Readers disagree when one ActualText span covers more glyphs than chars.
+    // Paint the real glyphs as artifacts, then emit one invisible semantic glyph
+    // per cluster with the cluster's full logical width and Unicode replacement.
+    if (actualText) *currentPage << "/Span << /ActualText <> >> BDC\n";
     qreal last_x = 0.;
     qreal last_y = 0.;
     for (int i = 0; i < glyphs.size(); ++i) {
@@ -2020,9 +2040,38 @@ void QPdfBaseEnginePrivate::drawTextItem(const QPointF &p, const QTextItemInt &t
         }
         *currentPage << "EMC\n";
     }
-#endif
 
+    if (actualText) *currentPage << "EMC\n";
     *currentPage << "ET\n";
+    if (artifactText) *currentPage << "EMC\n";
+    if (actualText) {
+        *currentPage << "BT\n/F" << font->object_id << size << "Tf 3 Tr\n";
+        qreal logicalX = p.x();
+        for (int gs = 0; gs < glyphs.size();) {
+            int ge = gs;
+            while (actualEnd[ge] < 0) ++ge;
+            qreal width = 0.;
+            for (int g = gs; g <= ge; ++g)
+                width += ti.glyphs.effectiveAdvance(g).toReal();
+            int from = actualStart[gs], to = actualEnd[ge];
+            if (ti.pdfActualTextFrom >= 0) {
+                from = qMax(from, ti.pdfActualTextFrom);
+                to = qMin(to, ti.pdfActualTextTo);
+            }
+            if (from < to) {
+                *currentPage << "/Span << /ActualText <FEFF";
+                char buf[5];
+                for (int c = from; c < to; ++c) *currentPage << QPdf::toHex(ti.chars[c].unicode(), buf);
+                *currentPage << "> >> BDC\n"
+                    << qMax(width, qreal(1./64)) / semanticWidth << "0 0 -1 "
+                    << logicalX << p.y() << "Tm <"
+                    << QPdf::toHex((ushort)font->addGlyph(0), buf) << "> Tj\nEMC\n";
+            }
+            logicalX += width;
+            gs = ge + 1;
+        }
+        *currentPage << "0 Tr\nET\n";
+    }
 }
 
 QRect QPdfBaseEnginePrivate::paperRect() const

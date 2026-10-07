@@ -873,9 +873,10 @@ static QFontEngine *engineForPattern(FcPattern *match, const QFontDef &request, 
     return fe;
 }
 
-QFontEngineMultiFT::QFontEngineMultiFT(QFontEngine *fe, FcPattern *matchedPattern, FcPattern *p, int s, const QFontDef &req)
+QFontEngineMultiFT::QFontEngineMultiFT(QFontEngine *fe, FcPattern *matchedPattern, FcPattern *p, int s, const QFontDef &req, FcBool trim)
     : QFontEngineMulti(2), request(req), pattern(p), fontSet(0), screen(s)
 {
+    trimFallbacks = trim;
     firstEnginePattern = FcPatternDuplicate(matchedPattern);
     engines[0] = fe;
     engines.at(0)->ref.ref();
@@ -903,11 +904,11 @@ void QFontEngineMultiFT::loadEngine(int at)
     QMutexLocker locker(qt_fontdatabase_mutex());
 
     extern QFontDef qt_FcPatternToQFontDef(FcPattern *pattern, const QFontDef &);
-    extern FcFontSet *qt_fontSetForPattern(FcPattern *pattern, const QFontDef &request);
+    extern FcFontSet *qt_fontSetForPattern(FcPattern *pattern, const QFontDef &request, FcBool trim);
 
     Q_ASSERT(at > 0);
     if (!fontSet) {
-        fontSet = qt_fontSetForPattern(pattern, request);
+        fontSet = qt_fontSetForPattern(pattern, request, trimFallbacks);
 
         // it may happen that the fontset of fallbacks consists of only one font. In this case we
         // have to fall back to the box fontengine as we cannot render the glyph.

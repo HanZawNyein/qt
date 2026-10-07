@@ -1261,7 +1261,13 @@ void QPdfEnginePrivate::writeHeader()
 {
     addXrefEntry(0,false);
 
-    xprintf("%%PDF-1.4\n");
+#ifdef QT_MYANMAR_HARFBUZZ
+    // ActualText on marked-content sequences requires PDF 1.5.
+    if (qgetenv("QT_MYANMAR_HARFBUZZ") == "1")
+        xprintf("%%PDF-1.5\n");
+    else
+#endif
+        xprintf("%%PDF-1.4\n");
 
     writeInfo();
 

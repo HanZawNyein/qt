@@ -309,7 +309,7 @@ class QTextItemInt : public QTextItem
 public:
     inline QTextItemInt()
         : justified(false), underlineStyle(QTextCharFormat::NoUnderline), num_chars(0), chars(0),
-          logClusters(0), f(0), fontEngine(0)
+          logClusters(0), f(0), fontEngine(0), pdfActualTextFrom(-1), pdfActualTextTo(-1)
     {}
     QTextItemInt(const QScriptItem &si, QFont *font, const QTextCharFormat &format = QTextCharFormat());
     QTextItemInt(const QGlyphLayout &g, QFont *font, const QChar *chars, int numChars, QFontEngine *fe,
@@ -335,6 +335,9 @@ public:
 
     QGlyphLayout glyphs;
     QFontEngine *fontEngine;
+    // Logical source range for a partially drawn shaped run; -1 means all chars.
+    int pdfActualTextFrom;
+    int pdfActualTextTo;
 };
 
 inline bool qIsControlChar(ushort uc)

@@ -1665,10 +1665,10 @@ done:
     return engine;
 }
 
-FcFontSet *qt_fontSetForPattern(FcPattern *pattern, const QFontDef &request)
+FcFontSet *qt_fontSetForPattern(FcPattern *pattern, const QFontDef &request, FcBool trim)
 {
     FcResult result;
-    FcFontSet *fs = FcFontSort(0, pattern, FcTrue, 0, &result);
+    FcFontSet *fs = FcFontSort(0, pattern, trim, 0, &result);
 #ifdef FONT_MATCH_DEBUG
     FM_DEBUG("first font in fontset:\n");
     FcPatternPrint(fs->fonts[0]);
@@ -1714,7 +1714,7 @@ static QFontEngine *loadFc(const QFontPrivate *fp, int script, const QFontDef &r
     FcPattern *match = FcFontMatch(0, pattern, &res);
     fe = tryPatternLoad(match, fp->screen, request, script);
     if (!fe) {
-        FcFontSet *fs = qt_fontSetForPattern(pattern, request);
+        FcFontSet *fs = qt_fontSetForPattern(pattern, request, FcTrue);
 
         if (match) {
             FcPatternDestroy(match);
@@ -1734,10 +1734,14 @@ static QFontEngine *loadFc(const QFontPrivate *fp, int script, const QFontDef &r
         }
         FM_DEBUG("engine for script %d is %s\n", script, fe ? fe->fontDef.family.toLatin1().data(): "(null)");
     }
+    bool useMulti = script == QUnicodeTables::Common;
+#ifdef QT_MYANMAR_HARFBUZZ
+    useMulti = useMulti || (script == QUnicodeTables::Myanmar && qgetenv("QT_MYANMAR_HARFBUZZ") == "1");
+#endif
     if (fe
-        && script == QUnicodeTables::Common
+        && useMulti
         && !(request.styleStrategy & QFont::NoFontMerging) && !fe->symbol) {
-        fe = new QFontEngineMultiFT(fe, match, pattern, fp->screen, request);
+        fe = new QFontEngineMultiFT(fe, match, pattern, fp->screen, request, script == QUnicodeTables::Common ? FcTrue : FcFalse);
     } else {
         FcPatternDestroy(pattern);
     }

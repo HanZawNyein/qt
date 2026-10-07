@@ -62,6 +62,9 @@
 #include <qdebug.h>
 
 #include "qfontengine_p.h"
+#ifdef QT_MYANMAR_HARFBUZZ
+#include "qmyanmarharfbuzz_p.h"
+#endif
 
 #if !defined(QT_NO_FREETYPE)
 #  include "qfontengine_ft_p.h"
@@ -2417,6 +2420,13 @@ void QTextLine::draw(QPainter *p, const QPointF &pos, const QTextLayout::FormatR
         gf.width = iterator.itemWidth;
         gf.justified = line.justified;
         gf.initWithScriptItem(si);
+#ifdef QT_MYANMAR_HARFBUZZ
+        if (selection && qt_myanmar_harfbuzz_enabled() && si.analysis.script == QUnicodeTables::Myanmar) {
+            gf.pdfActualTextFrom = qBound(0, selection->start - iterator.itemStart, gf.num_chars);
+            gf.pdfActualTextTo = qBound(gf.pdfActualTextFrom,
+                selection->start + selection->length - iterator.itemStart, gf.num_chars);
+        }
+#endif
 
         Q_ASSERT(gf.fontEngine);
 

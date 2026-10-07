@@ -426,6 +426,16 @@ public:
     QFontEngine *engine(int at) const
     {Q_ASSERT(at < engines.size()); return engines.at(at); }
 
+#ifdef QT_MYANMAR_HARFBUZZ
+    // Loading the first fallback can expand a Fontconfig engine list.
+    int myanmarEngineCount() const { return qMin(engines.size(), 256); }
+    QFontEngine *myanmarEngine(int at) {
+        if (at < 0 || at >= myanmarEngineCount()) return 0;
+        if (!engines.at(at)) loadEngine(at);
+        return at < engines.size() ? engines.at(at) : 0;
+    }
+#endif
+
 
 protected:
     friend class QPSPrintEnginePrivate;

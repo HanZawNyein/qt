@@ -351,6 +351,24 @@ QByteArray QFontSubset::glyphName(unsigned int glyph, const QVector<int> reverse
 }
 
 
+int QFontSubset::semanticAdvanceWidth() const
+{
+    if (semantic_width >= 0) return semantic_width;
+    semantic_width = 0;
+    const QFixed units = fontEngine->properties().emSquare;
+    if (units <= 0 || noEmbed) return semantic_width;
+    QPainterPath path;
+    glyph_metrics_t metrics;
+    fontEngine->getUnscaledGlyph(0, &path, &metrics);
+    // Exactly the advance conversion used by generateGlyph() and widthArray().
+    const qreal scaledAdvance = metrics.xoff.toReal() * 2048. / units.toReal();
+    // The subset stores this advance in quint16; reject invalid/overflow values.
+    if (!(scaledAdvance >= 0. && scaledAdvance <= 65535.)) return semantic_width;
+    const QFixed advance(qRound(scaledAdvance));
+    semantic_width = qMax(0, (advance * (QFixed(1000) / QFixed(2048))).toInt());
+    return semantic_width;
+}
+
 QByteArray QFontSubset::widthArray() const
 {
     Q_ASSERT(!widths.isEmpty());

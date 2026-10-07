@@ -55,6 +55,9 @@
 #include "qtextdocument_p.h"
 #include <qapplication.h>
 #include <stdlib.h>
+#ifdef QT_MYANMAR_HARFBUZZ
+#include "qmyanmarharfbuzz_p.h"
+#endif
 
 
 QT_BEGIN_NAMESPACE
@@ -129,7 +132,13 @@ private:
                 && m_analysis[i].flags == m_analysis[start].flags
                 && (m_analysis[i].script == m_analysis[start].script || m_string[i] == QLatin1Char('.'))
                 && m_analysis[i].flags < QScriptAnalysis::SpaceTabOrObject
-                && i - start < MaxItemLength)
+                && (i - start < MaxItemLength
+#ifdef QT_MYANMAR_HARFBUZZ
+                    || (qt_myanmar_harfbuzz_enabled() && m_analysis[start].script == QUnicodeTables::Myanmar
+                        && i - start < MaxItemLength + 64
+                        && qt_myanmar_continuation(m_string[i].unicode(), m_string[i-1].unicode()))
+#endif
+                    ))
                 continue;
             m_items.append(QScriptItem(start, m_analysis[start]));
             start = i;
@@ -171,7 +180,13 @@ private:
             if (m_analysis[i] == itemAnalysis
                 && m_analysis[i].flags < QScriptAnalysis::TabOrObject
                 && !atWordBoundary
-                && i - start < MaxItemLength)
+                && (i - start < MaxItemLength
+#ifdef QT_MYANMAR_HARFBUZZ
+                    || (qt_myanmar_harfbuzz_enabled() && m_analysis[start].script == QUnicodeTables::Myanmar
+                        && i - start < MaxItemLength + 64
+                        && qt_myanmar_continuation(m_string[i].unicode(), m_string[i-1].unicode()))
+#endif
+                    ))
                 continue;
 
             m_items.append(QScriptItem(start, itemAnalysis));
@@ -196,7 +211,13 @@ private:
             if ((m_analysis[i] == m_analysis[start])
                 && m_analysis[i].flags < QScriptAnalysis::TabOrObject
                 && l == lower
-                && i - start < MaxItemLength)
+                && (i - start < MaxItemLength
+#ifdef QT_MYANMAR_HARFBUZZ
+                    || (qt_myanmar_harfbuzz_enabled() && m_analysis[start].script == QUnicodeTables::Myanmar
+                        && i - start < MaxItemLength + 64
+                        && qt_myanmar_continuation(m_string[i].unicode(), m_string[i-1].unicode()))
+#endif
+                    ))
                 continue;
             m_items.append(QScriptItem(start, m_analysis[start]));
             if (lower)
@@ -1196,6 +1217,32 @@ void QTextEngine::shapeTextWithHarfbuzz(int item) const
 
     bool kerningEnabled = this->font(si).d->kerning;
 
+#ifdef QT_MYANMAR_HARFBUZZ
+    if (qt_myanmar_harfbuzz_enabled() && si.analysis.script == QUnicodeTables::Myanmar && !(si.analysis.bidiLevel & 1)) {
+        QMyanmarShape shaped;
+        if (qt_shape_myanmar(layoutData->string.mid(si.position, length(item)), font, kerningEnabled, &shaped)
+            && ensureSpace(shaped.glyphs.size())) {
+            QGlyphLayout output = availableGlyphs(&si).mid(0, shaped.glyphs.size());
+            output.clear();
+            for (int i = 0; i < shaped.glyphs.size(); ++i) {
+                output.glyphs[i] = shaped.glyphs[i].glyph;
+                output.advances_x[i] = shaped.glyphs[i].advance;
+                output.offsets[i] = shaped.glyphs[i].offset;
+                output.attributes[i].clusterStart = shaped.glyphs[i].clusterStart;
+            }
+            unsigned short *clusters = logClusters(&si);
+            for (int i = 0; i < shaped.clusters.size(); ++i) clusters[i] = shaped.clusters[i];
+            si.num_glyphs = shaped.glyphs.size();
+            si.ascent = qMax(si.ascent, shaped.ascent);
+            si.descent = qMax(si.descent, shaped.descent);
+            si.leading = qMax(si.leading, shaped.leading);
+            layoutData->used += si.num_glyphs;
+            return; // HarfBuzz already applies kerning; do not apply it twice.
+        }
+        qWarning("Modern Myanmar shaping failed; using legacy shaping for this run");
+    }
+#endif
+
     HB_ShaperItem entire_shaper_item;
     qMemSet(&entire_shaper_item, 0, sizeof(entire_shaper_item));
     entire_shaper_item.string = reinterpret_cast<const HB_UChar16 *>(layoutData->string.constData());
@@ -1427,6 +1474,24 @@ const HB_CharAttributes *QTextEngine::attributes() const
                        (HB_CharAttributes *)layoutData->memory);
 
 
+#ifdef QT_MYANMAR_HARFBUZZ
+    if (qt_myanmar_harfbuzz_enabled()) {
+        HB_CharAttributes *attrs = reinterpret_cast<HB_CharAttributes *>(layoutData->memory);
+        for (int i = 0; i < layoutData->items.size(); ++i) {
+            const QScriptItem &si = layoutData->items[i];
+            if (si.analysis.script != QUnicodeTables::Myanmar || (si.analysis.bidiLevel & 1)) continue;
+            QMyanmarShape shaped;
+            if (!qt_shape_myanmar(layoutData->string.mid(si.position, length(i)), fontEngine(si), this->font(si).d->kerning, &shaped)) continue;
+            for (int c = 0; c < shaped.clusters.size(); ++c) {
+                const bool start = !c || shaped.clusters[c] != shaped.clusters[c-1];
+                attrs[si.position+c].charStop = start;
+                // Clusters only prohibit internal breaks; they do not define legal word breaks.
+                if (c && !start) attrs[si.position+c-1].lineBreakType = HB_NoBreak;
+            }
+        }
+    }
+#endif
+
     layoutData->haveCharAttributes = true;
     return (HB_CharAttributes *) layoutData->memory;
 }
@@ -1576,6 +1641,12 @@ void QTextEngine::itemize() const
         // fall through
         default:
             int script = QUnicodeTables::script(*uc);
+#ifdef QT_MYANMAR_HARFBUZZ
+            if (qt_myanmar_harfbuzz_enabled()
+                && (qt_myanmar_character(*uc)
+                    || ((*uc == 0x200b || *uc == 0x200c || *uc == 0x200d) && lastScript == QUnicodeTables::Myanmar)))
+                script = QUnicodeTables::Myanmar;
+#endif
             analysis->script = script == QUnicodeTables::Inherited ? lastScript : script;
             analysis->flags = QScriptAnalysis::None;
             break;
@@ -3082,7 +3153,7 @@ QStackTextEngine::QStackTextEngine(const QString &string, const QFont &f)
 
 QTextItemInt::QTextItemInt(const QScriptItem &si, QFont *font, const QTextCharFormat &format)
     : justified(false), underlineStyle(QTextCharFormat::NoUnderline), charFormat(format),
-      num_chars(0), chars(0), logClusters(0), f(0), fontEngine(0)
+      num_chars(0), chars(0), logClusters(0), f(0), fontEngine(0), pdfActualTextFrom(-1), pdfActualTextTo(-1)
 {
     f = font;
     fontEngine = f->d->engineForScript(si.analysis.script);
@@ -3093,7 +3164,7 @@ QTextItemInt::QTextItemInt(const QScriptItem &si, QFont *font, const QTextCharFo
 
 QTextItemInt::QTextItemInt(const QGlyphLayout &g, QFont *font, const QChar *chars_, int numChars, QFontEngine *fe, const QTextCharFormat &format)
     : flags(0), justified(false), underlineStyle(QTextCharFormat::NoUnderline), charFormat(format),
-      num_chars(numChars), chars(chars_), logClusters(0), f(font),  glyphs(g), fontEngine(fe)
+      num_chars(numChars), chars(chars_), logClusters(0), f(font),  glyphs(g), fontEngine(fe), pdfActualTextFrom(-1), pdfActualTextTo(-1)
 {
 }
 
@@ -3143,6 +3214,10 @@ QTextItemInt QTextItemInt::midItem(QFontEngine *fontEngine, int firstGlyphIndex,
         int char_start = ti.chars - chars;
         while (char_start + ti.num_chars < num_chars && ti.logClusters[ti.num_chars] - logClusterOffset < end)
             ++ti.num_chars;
+        if (pdfActualTextFrom >= 0) {
+            ti.pdfActualTextFrom = qBound(0, pdfActualTextFrom - char_start, ti.num_chars);
+            ti.pdfActualTextTo = qBound(ti.pdfActualTextFrom, pdfActualTextTo - char_start, ti.num_chars);
+        }
     }
     return ti;
 }

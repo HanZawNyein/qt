@@ -62,6 +62,33 @@ static const QString fromRawDataWithoutRef(const String& string, int start = 0, 
     return QString::fromRawData(reinterpret_cast<const QChar*>(string.characters() + start), len);
 }
 
+static bool usesModernMyanmar(const TextRun& run)
+{
+    if (qgetenv("QT_MYANMAR_HARFBUZZ") != "1")
+        return false;
+    for (unsigned c = 0; c < run.length(); ++c) {
+        UChar u = run[c];
+        if ((u >= 0x1000 && u <= 0x109f) || (u >= 0xaa60 && u <= 0xaa7f)
+            || (u >= 0xa9e0 && u <= 0xa9ff))
+            return true;
+    }
+    return false;
+}
+
+static String normalizedQtText(const TextRun& run)
+{
+    if (!usesModernMyanmar(run))
+        return Font::normalizeSpaces(run.characters(), run.length());
+    UChar* buffer;
+    String text = String::createUninitialized(run.length(), buffer);
+    for (unsigned c = 0; c < run.length(); ++c) {
+        UChar u = run[c];
+        // Joiners affect shaping and must remain in the logical PDF text.
+        buffer[c] = (u == 0x200c || u == 0x200d) ? u : Font::normalizeSpaces(u);
+    }
+    return text;
+}
+
 static QTextLine setupLayout(QTextLayout* layout, const TextRun& style)
 {
     int flags = style.rtl() ? Qt::TextForceRightToLeft : Qt::TextForceLeftToRight;
@@ -75,6 +102,23 @@ static QTextLine setupLayout(QTextLayout* layout, const TextRun& style)
         line.setLineWidth(line.naturalTextWidth() + style.expansion());
     layout->endLayout();
     return line;
+}
+
+// The shadow paints glyphs but contributes no additional logical PDF text.
+static void drawQtShadowText(QPainter* painter, const QPointF& baseline, const QString& text,
+    const QFont& font, const TextRun& run, int flags)
+{
+    if (!usesModernMyanmar(run)) {
+        painter->drawText(baseline, text, flags, run.expansion());
+        return;
+    }
+    QTextLayout layout(text, font);
+    QTextLine line = setupLayout(&layout, run);
+    QTextLayout::FormatRange artifact;
+    artifact.start = 0;
+    artifact.length = text.size();
+    artifact.format.setProperty(QTextFormat::UserProperty + 0x4d59, true);
+    line.draw(painter, QPointF(baseline.x(), baseline.y() - line.ascent()), &artifact);
 }
 
 static QPen fillPenForContext(GraphicsContext* ctx)
@@ -125,7 +169,7 @@ static void drawTextCommon(GraphicsContext* ctx, const TextRun& run, const Float
     if (ctx->textDrawingMode() & TextModeStroke)
         textStrokePen = strokePenForContext(ctx);
 
-    String sanitized = Font::normalizeSpaces(run.characters(), run.length());
+    String sanitized = normalizedQtText(run);
     QString string = fromRawDataWithoutRef(sanitized);
     QPointF pt(point.x(), point.y());
 
@@ -133,6 +177,16 @@ static void drawTextCommon(GraphicsContext* ctx, const TextRun& run, const Float
         if (isComplexText) {
             QTextLayout layout(string, font);
             QTextLine line = setupLayout(&layout, run);
+            // Preserve the shaped run and pass its logical draw range to Qt PDF.
+            // Clipping the entire run alone exposes hidden Unicode in PDF extraction.
+            const bool myanmarRange = usesModernMyanmar(run);
+            QTextLayout::FormatRange drawnRange;
+            drawnRange.start = from;
+            drawnRange.length = to - from;
+            const QTextLayout::FormatRange* range = myanmarRange ? &drawnRange : 0;
+            QTextLayout::FormatRange shadowRange = drawnRange;
+            shadowRange.format.setProperty(QTextFormat::UserProperty + 0x4d59, true);
+            const QTextLayout::FormatRange* shadow = myanmarRange ? &shadowRange : 0;
             float x1 = line.cursorToX(from);
             float x2 = line.cursorToX(to);
             if (x2 < x1)
@@ -169,7 +223,7 @@ static void drawTextCommon(GraphicsContext* ctx, const TextRun& run, const Float
                     p->save();
                     p->setPen(ctxShadow->m_color);
                     p->translate(ctxShadow->offset());
-                    line.draw(p, pt);
+                    line.draw(p, pt, shadow);
                     p->restore();
                 } else {
                     QPainter* shadowPainter = ctxShadow->beginShadowLayer(ctx, boundingRect);
@@ -177,13 +231,13 @@ static void drawTextCommon(GraphicsContext* ctx, const TextRun& run, const Float
                         // Since it will be blurred anyway, we don't care about render hints.
                         shadowPainter->setFont(p->font());
                         shadowPainter->setPen(ctxShadow->m_color);
-                        line.draw(shadowPainter, pt);
+                        line.draw(shadowPainter, pt, shadow);
                         ctxShadow->endShadowLayer(ctx);
                     }
                 }
             }
             p->setPen(textFillPen);
-            line.draw(p, pt);
+            line.draw(p, pt, range);
             p->restore();
             return;
         }
@@ -209,7 +263,7 @@ static void drawTextCommon(GraphicsContext* ctx, const TextRun& run, const Float
                 p->save();
                 p->setPen(ctxShadow->m_color);
                 p->translate(ctxShadow->offset());
-                p->drawText(pt, string, flags, run.expansion());
+                drawQtShadowText(p, pt, string, font, run, flags);
                 p->restore();
             } else {
                 QFontMetrics fm(font);
@@ -219,7 +273,7 @@ static void drawTextCommon(GraphicsContext* ctx, const TextRun& run, const Float
                     // Since it will be blurred anyway, we don't care about render hints.
                     shadowPainter->setFont(p->font());
                     shadowPainter->setPen(ctxShadow->m_color);
-                    shadowPainter->drawText(pt, string, flags, run.expansion());
+                    drawQtShadowText(shadowPainter, pt, string, font, run, flags);
                     ctxShadow->endShadowLayer(ctx);
                 }
             }
@@ -269,7 +323,7 @@ float Font::floatWidthForComplexText(const TextRun& run, HashSet<const SimpleFon
     if (run.length() == 1 && treatAsSpace(run[0]))
         return QFontMetrics(font()).width(space) + run.expansion();
 
-    String sanitized = Font::normalizeSpaces(run.characters(), run.length());
+    String sanitized = normalizedQtText(run);
     QString string = fromRawDataWithoutRef(sanitized);
 
     int w = QFontMetrics(font()).width(string);
@@ -282,7 +336,7 @@ float Font::floatWidthForComplexText(const TextRun& run, HashSet<const SimpleFon
 
 int Font::offsetForPositionForComplexText(const TextRun& run, float position, bool) const
 {
-    String sanitized = Font::normalizeSpaces(run.characters(), run.length());
+    String sanitized = normalizedQtText(run);
     QString string = fromRawDataWithoutRef(sanitized);
 
     QTextLayout layout(string, font());
@@ -292,7 +346,7 @@ int Font::offsetForPositionForComplexText(const TextRun& run, float position, bo
 
 FloatRect Font::selectionRectForComplexText(const TextRun& run, const FloatPoint& pt, int h, int from, int to) const
 {
-    String sanitized = Font::normalizeSpaces(run.characters(), run.length());
+    String sanitized = normalizedQtText(run);
     QString string = fromRawDataWithoutRef(sanitized);
 
     QTextLayout layout(string, font());
@@ -379,7 +433,7 @@ void Font::drawSimpleText(GraphicsContext* ctx, const TextRun& run, const FloatP
 
 int Font::offsetForPositionForSimpleText(const TextRun& run, float position, bool includePartialGlyphs) const
 {
-    String sanitized = Font::normalizeSpaces(run.characters(), run.length());
+    String sanitized = normalizedQtText(run);
     QString string = fromRawDataWithoutRef(sanitized);
 
     QFontMetrics fm(font());
@@ -409,7 +463,7 @@ float Font::floatWidthForSimpleText(const TextRun& run, GlyphBuffer* glyphBuffer
     if (!run.length())
         return 0;
 
-    String sanitized = Font::normalizeSpaces(run.characters(), run.length());
+    String sanitized = normalizedQtText(run);
     QString string = fromRawDataWithoutRef(sanitized);
 
     int w = QFontMetrics(font()).width(string, -1, Qt::TextBypassShaping);
@@ -424,7 +478,7 @@ float Font::floatWidthForSimpleText(const TextRun& run, GlyphBuffer* glyphBuffer
 
 FloatRect Font::selectionRectForSimpleText(const TextRun& run, const FloatPoint& pt, int h, int from, int to) const
 {
-    String sanitized = Font::normalizeSpaces(run.characters(), run.length());
+    String sanitized = normalizedQtText(run);
     QString wholeText = fromRawDataWithoutRef(sanitized);
     QString selectedText = fromRawDataWithoutRef(sanitized, from, qMin(to - from, wholeText.length() - from));
 

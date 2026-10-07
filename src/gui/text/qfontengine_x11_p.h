@@ -140,7 +140,7 @@ private:
 class Q_GUI_EXPORT QFontEngineMultiFT : public QFontEngineMulti
 {
 public:
-    QFontEngineMultiFT(QFontEngine *fe, FcPattern *firstEnginePattern, FcPattern *p, int s, const QFontDef &request);
+    QFontEngineMultiFT(QFontEngine *fe, FcPattern *firstEnginePattern, FcPattern *p, int s, const QFontDef &request, FcBool trim = FcTrue);
     ~QFontEngineMultiFT();
 
     void loadEngine(int at);
@@ -151,6 +151,7 @@ private:
     FcPattern *firstEnginePattern;
     FcFontSet *fontSet;
     int screen;
+    FcBool trimFallbacks;
     int firstFontIndex; // first font in fontset
 };
 

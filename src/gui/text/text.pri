@@ -250,3 +250,13 @@ contains(QT_CONFIG, fontconfig) {
 
 DEFINES += QT_NO_OPENTYPE
 INCLUDEPATH += ../3rdparty/harfbuzz/src
+
+# Modern Myanmar bridge; legacy shaping remains the default at runtime.
+unix:!macx {
+    CONFIG += link_pkgconfig
+    PKGCONFIG += harfbuzz
+    LIBS_PRIVATE += -lharfbuzz
+    DEFINES += QT_MYANMAR_HARFBUZZ
+    SOURCES += text/qmyanmarharfbuzz.cpp
+    HEADERS += text/qmyanmarharfbuzz_p.h
+}

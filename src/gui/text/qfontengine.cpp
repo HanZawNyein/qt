@@ -1454,7 +1454,7 @@ bool QFontEngineMulti::stringToCMap(const QChar *str, int len,
 
         if (glyphs->glyphs[glyph_pos] == 0 && str[i].category() != QChar::Separator_Line) {
             QGlyphLayoutInstance tmp = glyphs->instance(glyph_pos);
-            for (int x = 1; x < engines.size(); ++x) {
+            for (int x = 1; x < qMin(engines.size(), 256); ++x) {
                 QFontEngine *engine = engines.at(x);
                 if (!engine) {
                     const_cast<QFontEngineMulti *>(this)->loadEngine(x);
